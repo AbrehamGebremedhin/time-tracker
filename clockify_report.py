@@ -12,10 +12,17 @@ HYDROCOIN_PROJECT_NAMES  = ["hydrocoin",  "HydroCoin",  "Hydro Coin"]
 """
 
 import os
+import re
 import sys
 import json
 import datetime
 from zoneinfo import ZoneInfo
+
+# Windows consoles default to cp1252, which can't encode the emoji used in
+# status output — force UTF-8 so the script runs identically on all platforms.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
 
 import requests
 from dotenv import load_dotenv
@@ -49,8 +56,8 @@ PROJECT_MAP: dict[str, str] = {
     "hydro coin":  "HydroCoin",
 }
 
-# Sheet name templates  →  "HotSpotApp Nov 1-15, 2025"
-SHEET_TEMPLATE = "{project} {label}"
+# Project label as it appears in the manual tab names: "Hydrocoin", "Hotspotapp"
+PROJECT_TAB_NAME = {"HotSpotApp": "Hotspotapp", "HydroCoin": "Hydrocoin"}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -76,6 +83,14 @@ def period_label(start: datetime.date, end: datetime.date) -> str:
     if start.month == end.month:
         return f"{start.strftime('%b')} {start.day}-{end.day}, {start.year}"
     return f"{start.strftime('%b %d')}-{end.strftime('%b %d, %Y')}"
+
+
+def sheet_title(project: str, start: datetime.date, end: datetime.date) -> str:
+    """Tab name matching the manual format: 'June 1 - 15, 2026 - Hydrocoin'."""
+    name = PROJECT_TAB_NAME.get(project, project)
+    if start.month == end.month:
+        return f"{start:%B} {start.day} - {end.day}, {start.year} - {name}"
+    return f"{start:%B} {start.day} - {end:%B} {end.day}, {start.year} - {name}"
 
 
 def to_clockify_utc(d: datetime.date, end_of_day: bool = False) -> str:
@@ -156,6 +171,20 @@ def format_duration(td: datetime.timedelta) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 
+def format_task(description: str | None) -> str:
+    """Format a Clockify description as the manual sheet does: Task: "<text>".
+
+    Some entries are typed straight into Clockify already wrapped (e.g.
+    'Task: "Fix bug"'); in that case use them as-is instead of double-wrapping.
+    """
+    description = (description or "").strip()
+    if not description:
+        return "(no description)"
+    if description.lower().startswith("task:"):
+        return description
+    return f'Task: "{description}"'
+
+
 def resolve_project(entry: dict) -> str | None:
     """Return canonical project name or None if unrecognised."""
     project = entry.get("project") or {}
@@ -185,8 +214,7 @@ def build_rows(entries: list[dict]) -> list[list]:
         local_dt = dt.astimezone(ZoneInfo("Africa/Addis_Ababa"))
         date     = local_dt.date()
 
-        description = (entry.get("description") or "").strip()
-        task_name   = f'Task: "{description}"' if description else "(no description)"
+        task_name = format_task(entry.get("description"))
 
         tags      = entry.get("tags") or []
         tag_names = [t.get("name", "") for t in tags]
@@ -206,7 +234,7 @@ def build_rows(entries: list[dict]) -> list[list]:
     for idx, (date, task, category, duration) in enumerate(parsed, start=1):
         rows.append([
             idx,
-            date.strftime("%b %-d, %Y"),   # e.g. "Jan 5, 2026"
+            f"{date:%b} {date.day}, {date.year}",   # e.g. "Jan 5, 2026"  (%-d is non-portable)
             task,
             category,
             format_duration(duration),
@@ -240,13 +268,51 @@ def get_sheets_service():
     return build("sheets", "v4", credentials=creds)
 
 
-def get_existing_sheet_names(service, spreadsheet_id: str) -> list[str]:
+_MONTHS = {m: i for i, m in enumerate(
+    ["January", "February", "March", "April", "May", "June", "July",
+     "August", "September", "October", "November", "December"], start=1)}
+
+# Matches a manual tab name like "May 16 - 31, 2026 - Hydrocoin"
+_TAB_RE = re.compile(r"^([A-Za-z]+)\s+(\d+)\s*-\s*\d+,\s*(\d+)\s*-\s*\S+")
+
+
+def list_sheets(service, spreadsheet_id: str) -> list[tuple[str, int]]:
+    """Return [(title, sheetId), ...] for every tab in the spreadsheet."""
     meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    return [s["properties"]["title"] for s in meta["sheets"]]
+    return [(s["properties"]["title"], s["properties"]["sheetId"])
+            for s in meta["sheets"]]
 
 
-def add_sheet(service, spreadsheet_id: str, title: str) -> int:
-    body = {"requests": [{"addSheet": {"properties": {"title": title}}}]}
+def _period_sort_key(title: str) -> tuple[int, int, int]:
+    """Sort key (year, month, start-day) parsed from a manual tab name."""
+    m = _TAB_RE.match(title)
+    if not m:
+        return (0, 0, 0)
+    month, day, year = m.group(1), int(m.group(2)), int(m.group(3))
+    return (year, _MONTHS.get(month, 0), day)
+
+
+def find_template_sheet(sheets, project_label: str, exclude_title: str):
+    """Most recent existing tab for this project, to copy dropdown colors from.
+
+    Returns (title, sheetId) or None. Chip colors can't be set via the API, so
+    we duplicate a prior colored tab instead of creating a blank one.
+    """
+    suffix = f" - {project_label}"
+    candidates = [
+        (title, sid) for title, sid in sheets
+        if title.endswith(suffix) and title != exclude_title
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda ts: _period_sort_key(ts[0]))
+
+
+def add_sheet(service, spreadsheet_id: str, title: str, index: int | None = None) -> int:
+    props = {"title": title}
+    if index is not None:
+        props["index"] = index
+    body = {"requests": [{"addSheet": {"properties": props}}]}
     resp = (
         service.spreadsheets()
         .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
@@ -255,25 +321,71 @@ def add_sheet(service, spreadsheet_id: str, title: str) -> int:
     return resp["replies"][0]["addSheet"]["properties"]["sheetId"]
 
 
+def duplicate_sheet(
+    service, spreadsheet_id: str, source_id: int, new_title: str,
+    index: int | None = None,
+) -> int:
+    dup = {"sourceSheetId": source_id, "newSheetName": new_title}
+    if index is not None:
+        dup["insertSheetIndex"] = index
+    body = {"requests": [{"duplicateSheet": dup}]}
+    resp = (
+        service.spreadsheets()
+        .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
+        .execute()
+    )
+    return resp["replies"][0]["duplicateSheet"]["properties"]["sheetId"]
+
+
 def write_report_sheet(
     service,
     spreadsheet_id: str,
     sheet_title: str,
     rows: list[list],
+    project: str,
 ) -> None:
-    """Create (or overwrite) a sheet and write the time-report table."""
-    existing = get_existing_sheet_names(service, spreadsheet_id)
+    """Create (or overwrite) a sheet and write the time-report table.
+
+    New tabs are created by duplicating the most recent existing tab for the
+    same project, so the colored Category dropdown chips carry over (their
+    colors can't be set through the Sheets API).
+    """
+    sheets = list_sheets(service, spreadsheet_id)
+    existing = {title: sid for title, sid in sheets}
+    has_dropdown = True  # duplicated/existing tabs already have colored chips
+
     if sheet_title in existing:
         print(f"  Sheet '{sheet_title}' already exists — overwriting data.")
-        sheet_id = None  # we'll write by title
+        sheet_id = existing[sheet_title]
     else:
-        print(f"  Creating sheet '{sheet_title}'.")
-        sheet_id = add_sheet(service, spreadsheet_id, sheet_title)
+        template = find_template_sheet(
+            sheets, PROJECT_TAB_NAME.get(project, project), sheet_title)
+        end_index = len(sheets)  # append new tabs at the end (chronological order)
+        if template:
+            print(f"  Creating '{sheet_title}' from '{template[0]}' "
+                  f"(keeps dropdown colors).")
+            sheet_id = duplicate_sheet(
+                service, spreadsheet_id, template[1], sheet_title, end_index)
+        else:
+            print(f"  Creating sheet '{sheet_title}' "
+                  f"(no prior tab found — dropdown will be uncolored).")
+            sheet_id = add_sheet(service, spreadsheet_id, sheet_title, end_index)
+            has_dropdown = False
 
-    # Header row
+    # Wipe any inherited/old data before writing fresh values (keeps formatting
+    # and the colored dropdown validation, which live on the cells, not values).
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id, range=f"'{sheet_title}'!A2:Z1000",
+    ).execute()
+
+    # Header + data + a totals row that sums the time column (matching the
+    # manual sheet). With USER_ENTERED, "0:57:00" strings parse as durations,
+    # so the SUM below totals correctly.
     header = [["ID", "Date", "Task", "Category", "Time taken (HH:MM:SS)"]]
+    last_data_row = 1 + len(rows)                      # 1-based row of last entry
+    total_row = ["", "", "", "", f"=SUM(E2:E{last_data_row})"]
 
-    all_values = header + rows
+    all_values = header + rows + [total_row]
 
     service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
@@ -283,73 +395,98 @@ def write_report_sheet(
     ).execute()
 
     # ── Formatting ──────────────────────────────────────────────────────────
-    # Get sheet id if we didn't just create it
-    if sheet_id is None:
-        meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-        for s in meta["sheets"]:
-            if s["properties"]["title"] == sheet_title:
-                sheet_id = s["properties"]["sheetId"]
-                break
-
     num_rows = len(all_values)
     requests = [
-        # Bold + background header
+        # Left-align everything; let long task text overflow (no wrapping)
         {
             "repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1},
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 0,
+                    "endRowIndex": num_rows,
+                    "startColumnIndex": 0,
+                    "endColumnIndex": 5,
+                },
                 "cell": {
                     "userEnteredFormat": {
-                        "backgroundColor": {"red": 0.2, "green": 0.47, "blue": 0.75},
-                        "textFormat": {
-                            "bold": True,
-                            "foregroundColor": {"red": 1, "green": 1, "blue": 1},
-                            "fontSize": 10,
-                        },
-                        "horizontalAlignment": "CENTER",
+                        "horizontalAlignment": "LEFT",
+                        "wrapStrategy": "OVERFLOW_CELL",
                     }
                 },
-                "fields": "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment)",
+                "fields": "userEnteredFormat(horizontalAlignment,wrapStrategy)",
             }
         },
-        # Center-align all data cells
+        # Time column as elapsed duration so values and the SUM display as H:MM:SS
         {
             "repeatCell": {
                 "range": {
                     "sheetId": sheet_id,
                     "startRowIndex": 1,
                     "endRowIndex": num_rows,
+                    "startColumnIndex": 4,
+                    "endColumnIndex": 5,
                 },
                 "cell": {
                     "userEnteredFormat": {
-                        "horizontalAlignment": "CENTER",
-                        "wrapStrategy": "WRAP",
+                        "numberFormat": {"type": "TIME", "pattern": "[h]:mm:ss"}
                     }
                 },
-                "fields": "userEnteredFormat(horizontalAlignment,wrapStrategy)",
+                "fields": "userEnteredFormat.numberFormat",
             }
         },
-        # Auto-resize columns A–E
+        # Size the ID & Date columns; leave Task narrow so it overflows like the manual sheet
         {
             "autoResizeDimensions": {
                 "dimensions": {
                     "sheetId": sheet_id,
                     "dimension": "COLUMNS",
                     "startIndex": 0,
-                    "endIndex": 5,
+                    "endIndex": 2,
                 }
             }
         },
-        # Freeze header row
-        {
-            "updateSheetProperties": {
-                "properties": {
-                    "sheetId": sheet_id,
-                    "gridProperties": {"frozenRowCount": 1},
-                },
-                "fields": "gridProperties.frozenRowCount",
-            }
-        },
     ]
+
+    # ── Category dropdown ─────────────────────────────────────────────────
+    category_range = {
+        "sheetId": sheet_id,
+        "startRowIndex": 1,
+        "endRowIndex": last_data_row,
+        "startColumnIndex": 3,
+        "endColumnIndex": 4,
+    }
+    if has_dropdown:
+        # The duplicated tab already carries the colored chips on its data rows.
+        # Just strip any leftover dropdown from the totals row and below.
+        requests.append({
+            "setDataValidation": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": last_data_row,
+                    "startColumnIndex": 3,
+                    "endColumnIndex": 4,
+                },
+            }
+        })
+    else:
+        # No template to copy from: create a plain (uncolored) dropdown.
+        requests.append({
+            "setDataValidation": {
+                "range": category_range,
+                "rule": {
+                    "condition": {
+                        "type": "ONE_OF_LIST",
+                        "values": [
+                            {"userEnteredValue": "Task"},
+                            {"userEnteredValue": "Onboarding"},
+                            {"userEnteredValue": "Meeting"},
+                        ],
+                    },
+                    "showCustomUi": True,
+                    "strict": False,
+                },
+            }
+        })
 
     service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id, body={"requests": requests}
@@ -406,9 +543,9 @@ def main() -> None:
             print(f"  ⚠️  No entries for {project} — skipping sheet creation.")
             continue
 
-        sheet_title = SHEET_TEMPLATE.format(project=project, label=label)
+        title = sheet_title(project, start, end)
         rows = build_rows(items)
-        write_report_sheet(service, SPREADSHEET_ID, sheet_title, rows)
+        write_report_sheet(service, SPREADSHEET_ID, title, rows, project)
 
     print(f"\n✅  Done! Open your spreadsheet:\n"
           f"    https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit\n")

@@ -8,3 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Environent variables
+.env
+
+# Secrets
+client_secret_*.apps.googleusercontent.com.json
+token.json
