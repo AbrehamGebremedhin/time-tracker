@@ -456,8 +456,22 @@ def write_report_sheet(
         "endColumnIndex": 4,
     }
     if has_dropdown:
-        # The duplicated tab already carries the colored chips on its data rows.
-        # Just strip any leftover dropdown from the totals row and below.
+        # The duplicated tab only carries colored chips on as many rows as the
+        # template had. If this period has more entries, the extra rows come out
+        # as plain text. Copy row 2's chip dropdown down across ALL data rows so
+        # every entry gets the colored validation, regardless of template length.
+        requests.append({
+            "copyPaste": {
+                "source": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1, "endRowIndex": 2,
+                    "startColumnIndex": 3, "endColumnIndex": 4,
+                },
+                "destination": category_range,
+                "pasteType": "PASTE_DATA_VALIDATION",
+            }
+        })
+        # Strip any leftover dropdown from the totals row and below.
         requests.append({
             "setDataValidation": {
                 "range": {
