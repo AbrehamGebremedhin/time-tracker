@@ -2,7 +2,8 @@
 
 Pulls time entries from [Clockify](https://clockify.me) for a reporting period,
 splits them by project, and writes a formatted tab into a shared Google Sheet —
-reproducing the layout that was previously maintained by hand.
+reproducing the layout that was previously maintained by hand. Also includes a
+daily task timeline and a Telegram bot wrapper for running both remotely.
 
 Each run produces one tab per project, e.g. `June 1 - 15, 2026 - Hydrocoin`, with
 columns **ID · Date · Task · Category · Time taken (HH:MM:SS)**, a colored
@@ -55,6 +56,29 @@ python clockify_report.py 2026-06-01 2026-06-15
 
 Re-running the same period overwrites that tab's data in place.
 
+```bash
+# Daily task timeline (today, or a specific day)
+python daily_timeline.py
+python daily_timeline.py 2026-06-15
+```
+
+### Telegram bot
+
+Run both commands remotely via Telegram instead of the CLI:
+
+```bash
+python bot.py     # or: uv run bot
+```
+
+Add to `.env`:
+
+```ini
+TELEGRAM_BOT_TOKEN=123:abc...           # from @BotFather
+TELEGRAM_ALLOWED_IDS=11111111,22222222  # chat ids allowed to use it (optional but recommended)
+```
+
+Chat commands: `/report [start end]`, `/timeline [date]`.
+
 ## Configuration
 
 Edit these in [clockify_report.py](clockify_report.py):
@@ -74,6 +98,12 @@ Edit these in [clockify_report.py](clockify_report.py):
   won't have a `Category` dropdown.
 - `.env`, `token.json`, and the OAuth client secret are gitignored — keep them out
   of version control.
+
+## Tests
+
+```bash
+python -m unittest discover -p "test_*.py"
+```
 
 ## Automation
 
