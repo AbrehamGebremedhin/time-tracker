@@ -171,16 +171,20 @@ def format_duration(td: datetime.timedelta) -> str:
     return f"{h}:{m:02d}:{s:02d}"
 
 
+_KNOWN_PREFIXES = ("task:", "meeting:", "onboarding:")
+
+
 def format_task(description: str | None) -> str:
     """Format a Clockify description as the manual sheet does: Task: "<text>".
 
     Some entries are typed straight into Clockify already wrapped (e.g.
-    'Task: "Fix bug"'); in that case use them as-is instead of double-wrapping.
+    'Task: "Fix bug"' or 'Meeting: "Standup"'); in that case use them as-is
+    instead of double-wrapping.
     """
     description = (description or "").strip()
     if not description:
         return "(no description)"
-    if description.lower().startswith("task:"):
+    if description.lower().startswith(_KNOWN_PREFIXES):
         return description
     return f'Task: "{description}"'
 
@@ -214,13 +218,18 @@ def build_rows(entries: list[dict]) -> list[list]:
         local_dt = dt.astimezone(ZoneInfo("Africa/Addis_Ababa"))
         date     = local_dt.date()
 
-        task_name = format_task(entry.get("description"))
+        description = entry.get("description") or ""
+        task_name   = format_task(description)
 
-        tags      = entry.get("tags") or []
-        tag_names = [t.get("name", "") for t in tags]
-        if any("meeting" in t.lower() for t in tag_names):
+        # Category comes from a "Meeting: ..." / "Onboarding: ..." prefix on
+        # the description (how entries are actually typed into Clockify), or
+        # from a tag of the same name for anyone who tags instead.
+        desc_lower = description.strip().lower()
+        tags       = entry.get("tags") or []
+        tag_names  = [t.get("name", "") for t in tags]
+        if desc_lower.startswith("meeting:") or any("meeting" in t.lower() for t in tag_names):
             category = "Meeting"
-        elif any("onboarding" in t.lower() for t in tag_names):
+        elif desc_lower.startswith("onboarding:") or any("onboarding" in t.lower() for t in tag_names):
             category = "Onboarding"
         else:
             category = "Task"

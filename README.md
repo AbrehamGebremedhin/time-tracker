@@ -13,7 +13,8 @@ columns **ID · Date · Task · Category · Time taken (HH:MM:SS)**, a colored
 
 1. Fetches all of your time entries from Clockify for the period (handles paging).
 2. Groups them by project using `PROJECT_MAP` and assigns a category from the
-   entry's tags (`meeting` → Meeting, `onboarding` → Onboarding, else Task).
+   description prefix (`Meeting:` → Meeting, `Onboarding:` → Onboarding, else
+   Task), or a matching tag if you use tags instead.
 3. For each project, creates a new tab in the spreadsheet by **duplicating the most
    recent existing tab for that project**, then writes the fresh data into it.
    Duplicating is deliberate: the Sheets API can't set dropdown *chip colors*, so

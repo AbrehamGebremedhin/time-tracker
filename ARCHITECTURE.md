@@ -36,8 +36,9 @@ Single file, five sections in reading order:
    and tag objects come inline (no extra lookups).
 3. **Parse & group** — `PROJECT_MAP` (module-level dict) maps lowercase Clockify
    project names to canonical labels (`HotSpotApp`, `HydroCoin`); unmapped
-   entries are skipped with a warning. Category comes from tags: `meeting` →
-   Meeting, `onboarding` → Onboarding, else Task. `build_rows()` produces
+   entries are skipped with a warning. Category comes from the description
+   prefix (`Meeting:` → Meeting, `Onboarding:` → Onboarding, else Task), or a
+   matching tag. `build_rows()` produces
    `[ID, Date, Task, Category, H:MM:SS]` sorted by date.
 4. **Sheets writer** — `write_report_sheet()` is the interesting part; see
    "Key design decision" below.

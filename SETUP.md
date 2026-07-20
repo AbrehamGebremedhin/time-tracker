@@ -106,14 +106,16 @@ Or more simply, use a cron service / GitHub Action / task scheduler.
 
 ## Category detection
 
-The script assigns categories based on Clockify **tags**:
+The script assigns categories from the description prefix you type into
+Clockify, or from a matching tag if you use tags instead:
 
-| Tag contains | Category |
+| Description starts with / tag contains | Category |
 |---|---|
-| "meeting" | Meeting |
-| "onboarding" | Onboarding |
+| "Meeting:" | Meeting |
+| "Onboarding:" | Onboarding |
 | *(anything else)* | Task |
 
-Make sure you tag your Clockify entries with "Meeting" for meetings, etc.
-If you don't use tags, everything will default to **Task** — which matches
-most of your existing data.
+Type entries as `Meeting: "Standup"` / `Onboarding: "New hire"` in Clockify's
+description field (matches the "Task: ..." convention already used for
+regular tasks), or tag entries "Meeting"/"Onboarding" instead. Everything
+else defaults to **Task**.

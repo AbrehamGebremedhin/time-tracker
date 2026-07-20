@@ -62,6 +62,21 @@ def test_build_rows_sorts_and_numbers():
     assert rows[0][4] == "0:30:00"
 
 
+def test_build_rows_category_from_description_prefix():
+    # This is how entries are actually typed into Clockify — no tags involved.
+    entries = [
+        {"description": 'Meeting: "Standup"', "tags": [],
+         "timeInterval": {"start": "2026-01-05T08:00:00Z", "duration": "PT30M"}},
+        {"description": 'Onboarding: "New hire"', "tags": [],
+         "timeInterval": {"start": "2026-01-06T08:00:00Z", "duration": "PT30M"}},
+    ]
+    rows = build_rows(entries)
+    assert rows[0][2] == 'Meeting: "Standup"'      # not double-wrapped
+    assert rows[0][3] == "Meeting"
+    assert rows[1][2] == 'Onboarding: "New hire"'
+    assert rows[1][3] == "Onboarding"
+
+
 def test_period_label_and_sheet_title():
     s, e = datetime.date(2026, 6, 1), datetime.date(2026, 6, 15)
     assert period_label(s, e) == "Jun 1-15, 2026"
