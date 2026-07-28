@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 # Reuse the Clockify plumbing already written for the sheet report.
 from clockify_report import (
-    get_user_id, get_time_entries, parse_duration, WORKSPACE_ID,
+    get_user_id, get_time_entries, parse_duration, format_task, WORKSPACE_ID,
 )
 
 ADDIS = ZoneInfo("Africa/Addis_Ababa")
@@ -53,9 +53,7 @@ def build_timeline(entries: list[dict]) -> list[str]:
     lines = []
     for i, (_, task, mins, note) in enumerate(rows, start=1):
         unit = "minute" if mins == 1 else "minutes"
-        # Descriptions are often already wrapped (Task: "..."); don't double-wrap.
-        label = task if task.lower().startswith("task:") else f'Task: "{task}"'
-        line = f'{i}. {label}, {mins} {unit}'
+        line = f'{i}. {format_task(task)}, {mins} {unit}'
         if note:
             line += f', "{note}"'
         lines.append(line)

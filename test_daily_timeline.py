@@ -22,6 +22,11 @@ def test():
     wrapped = [{"description": 'Task: "Deploy changes."', "timeInterval":
                {"start": "2026-06-18T09:00:00Z", "duration": "PT8M"}}]
     assert build_timeline(wrapped)[0] == '1. Task: "Deploy changes.", 8 minutes'
+
+    # Meeting:/Onboarding: prefixes are labels too, not task text
+    meeting = [{"description": 'Meeting: "Dev Sync"', "timeInterval":
+               {"start": "2026-06-18T09:00:00Z", "duration": "PT21M"}}]
+    assert build_timeline(meeting)[0] == '1. Meeting: "Dev Sync", 21 minutes'
     print("ok")
 
 
