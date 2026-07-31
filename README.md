@@ -88,7 +88,7 @@ Edit these in [clockify_report.py](clockify_report.py):
   labels. If the script prints `entries skipped (unknown projects: …)`, add the
   missing name here.
 - `PROJECT_TAB_NAME` — how each project appears in the tab name (e.g. `Hydrocoin`).
-- The timezone in `to_clockify_utc` / `build_rows` (`Africa/Addis_Ababa`).
+- The timezone in `to_clockify_utc` / `build_rows` (`Africa/Addis_Ababa`) uses ip to resolve the timezone.
 
 ## Notes
 
