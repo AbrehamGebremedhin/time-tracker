@@ -86,14 +86,20 @@ python daily_timeline.py 2026-06-15
 ```
 
 ```bash
-# Earnings for a month (current month if omitted), or "total" for all-time
+# Earnings for a month (current month if omitted), "last" month, or "total" for all-time
 python earnings.py
 python earnings.py 2026-06
+python earnings.py last
 python earnings.py total
 ```
 
 Your hourly-rate history lives in `rates.json` (gitignored, not committed) and is
 edited via the Telegram bot's `/setrate` command, or by hand.
+
+HotSpotApp also carries a weekly retainer — a guaranteed minimum billable hours
+per week, even if actual logged hours are lower (see `RETAINERS` in
+`earnings.py`). This only affects the earnings math; `/report` and `/timeline`
+always show actual logged hours.
 
 ### Telegram bot
 
@@ -103,16 +109,22 @@ Run all of the above remotely via Telegram instead of the CLI:
 python bot.py     # or: uv run bot
 ```
 
-Chat commands:
+Chat commands (also shown as a "/" autocomplete menu, and via `/start`/`/help`):
 
-- `/report [start end]` — generate the Google Sheets report
-- `/timeline [date]` — a day's task timeline
+- `/report [start end|last]` — generate the Google Sheets report: current period, the previous one ("last"), or an explicit date range
+- `/timeline [date|today|yesterday]` — a day's task timeline (today if omitted)
 - `/setrate <amount> [date]` — set the hourly rate, effective from `date` (today if omitted)
 - `/rates` — show the hourly-rate history
-- `/earnings [month|total]` — earnings for a month (current if omitted) or all-time
+- `/earnings [month|last|total]` — earnings for the current month, last month, a specific `YYYY-MM`, or all-time
+
+A quick-access keyboard (Report/Timeline/Earnings/Rates) appears after `/start`.
+Bot-generated replies use Markdown formatting; `/report` and `/timeline` are
+always sent plain since they echo freeform Clockify task text.
 
 For a bot that stays online continuously (e.g. on a VPS), see
-[SETUP.md](SETUP.md#running-the-bot-continuously-systemd) for a systemd unit.
+[SETUP.md](SETUP.md#running-the-bot-continuously-systemd) for a systemd unit,
+and [deploy/time-tracker-remind.timer](deploy/time-tracker-remind.timer) for a
+Telegram reminder on the 15th and last day of each month.
 
 ## Configuration
 

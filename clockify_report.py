@@ -83,6 +83,15 @@ def current_period() -> tuple[datetime.date, datetime.date]:
     return start, end
 
 
+def previous_period() -> tuple[datetime.date, datetime.date]:
+    """Return (start, end) for the semi-monthly period before the current one."""
+    today = datetime.date.today()
+    if today.day <= 15:
+        prior_month_last_day = today.replace(day=1) - datetime.timedelta(days=1)
+        return prior_month_last_day.replace(day=16), prior_month_last_day
+    return today.replace(day=1), today.replace(day=15)
+
+
 def period_label(start: datetime.date, end: datetime.date) -> str:
     """E.g.  'Nov 1-15, 2025'  or  'Nov 16-30, 2025'."""
     if start.month == end.month:
@@ -597,6 +606,8 @@ def main() -> None:
     if len(sys.argv) == 3:
         start = datetime.date.fromisoformat(sys.argv[1])
         end   = datetime.date.fromisoformat(sys.argv[2])
+    elif len(sys.argv) == 2 and sys.argv[1] == "last":
+        start, end = previous_period()
     else:
         start, end = current_period()
 

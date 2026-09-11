@@ -151,11 +151,21 @@ Clockify entries (JSON, paged)
 ## Data flow (earnings)
 
 ```
-Clockify entries (JSON, paged, arbitrary date range)
+Clockify entries (JSON, paged, week-aligned range)
   → filter by PROJECT_MAP
-  → per entry: local date → rate_for_date() → hours × rate
+  → per entry: local date → rate_for_date() → hours × rate, bucketed by (project, week)
+  → per (project, week): actual vs. retainer_hours_for_date() floor, whichever is higher
   → summed per project + combined total
 ```
+
+HotSpotApp carries a weekly retainer — a guaranteed minimum billable hours per
+Sunday-Saturday week (`RETAINERS` in `earnings.py`: 8h/week from 2026-03-01,
+4h/week from 2026-07-01), even if actual logged hours are lower, or zero. This
+only affects `earnings.py`'s math — `/report` and `/timeline` always show
+actual logged hours. `compute_earnings()` fetches a week-aligned Clockify range
+(so a week's actual hours are counted correctly even if they spill past the
+query boundary) and excludes weeks that haven't started yet, so querying the
+current, in-progress month doesn't prematurely float pay for future weeks.
 
 ## Tests
 

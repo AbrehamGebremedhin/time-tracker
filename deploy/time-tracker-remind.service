@@ -1,0 +1,8 @@
+[Unit]
+Description=Send a Telegram reminder that the reporting period closes today
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/abreham/Projects/time-tracker
+EnvironmentFile=/home/abreham/Projects/time-tracker/.env
+ExecStart=/home/abreham/Projects/time-tracker/.venv/bin/python remind.py

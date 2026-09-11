@@ -1,0 +1,10 @@
+[Unit]
+Description=Reporting-period-close reminder, on the 15th and last day of each month
+
+[Timer]
+OnCalendar=*-*-15 09:00:00 Africa/Addis_Ababa
+OnCalendar=*-*~1 09:00:00 Africa/Addis_Ababa
+Persistent=true
+
+[Install]
+WantedBy=timers.target

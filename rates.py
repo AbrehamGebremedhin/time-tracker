@@ -55,11 +55,13 @@ def rate_for_date(d: datetime.date, history: list[tuple[datetime.date, float]] |
 
 
 def format_rates(history: list[tuple[datetime.date, float]] | None = None) -> str:
+    """Safe to send with Telegram's Markdown parse_mode: every character here
+    is ours (dates/amounts), never freeform text, so formatting can't break."""
     if history is None:
         history = load_rates()
     if not history:
-        return "No rates on file. Set one with /setrate <amount> [YYYY-MM-DD]."
-    lines = ["Rate history:"]
+        return "No rates on file yet. Set one, e.g. /setrate 12.5 or /setrate 12.5 2026-07-01."
+    lines = ["*Rate history*"]
     for eff, rate in history:
-        lines.append(f"  ${rate:.2f}/hr from {eff:%b %d, %Y}")
+        lines.append(f"• ${rate:.2f}/hr from {eff:%b %d, %Y}")
     return "\n".join(lines)

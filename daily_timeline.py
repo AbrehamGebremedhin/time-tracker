@@ -61,15 +61,22 @@ def build_timeline(entries: list[dict]) -> list[str]:
 
 
 def main() -> None:
+    today = datetime.datetime.now(ADDIS).date()
     if len(sys.argv) == 2:
-        day = datetime.date.fromisoformat(sys.argv[1])
+        arg = sys.argv[1]
+        if arg == "today":
+            day = today
+        elif arg == "yesterday":
+            day = today - datetime.timedelta(days=1)
+        else:
+            day = datetime.date.fromisoformat(arg)
     else:
-        day = datetime.datetime.now(ADDIS).date()
+        day = today
 
     entries = get_time_entries(WORKSPACE_ID, get_user_id(), day, day)
     lines = build_timeline(entries)
 
-    label = "Today's" if day == datetime.date.today() else f"{day:%b %d, %Y}"
+    label = "Today's" if day == today else f"{day:%b %d, %Y}"
     print(f"\n{label} task timeline:\n")
     print("\n".join(lines) if lines else "(no entries)")
 
