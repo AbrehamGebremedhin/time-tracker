@@ -1,29 +1,35 @@
 """
-One-off migration: split the combined Clockify report spreadsheet into two —
-one for HotSpotApp, one for HydroCoin — carrying over every existing tab.
+One-off migration: populate the two per-project spreadsheets (HotSpotApp,
+HydroCoin) by regenerating every semi-monthly period directly from Clockify —
+the source of truth — rather than copying tabs out of the old combined
+spreadsheet. This sidesteps two problems with copying: cross-spreadsheet
+`copyTo` needs Editor access on the *source* file (fragile to get right for a
+service account), and several of the oldest tabs predate the per-project split
+and mix both projects in one tab with no reliable way to split them from the
+sheet text alone.
 
 What it does
 ------------
 1. Creates the two destination spreadsheets (unless their ids are already set
-   in .env), and shares each with GOOGLE_ACCOUNT_EMAIL as Editor.
-2. Copies every tab from the legacy combined spreadsheet into the matching
-   destination spreadsheet, in chronological order, preserving formatting and
-   the colored Category dropdown chips (Sheets `copyTo` clones the whole
-   sheet, not just values).
-3. Leaves the legacy spreadsheet untouched — this is a copy, not a move.
-4. Is idempotent: re-running skips any tab title that already exists in its
-   destination spreadsheet.
+   in .env).
+2. Enumerates every semi-monthly period (1st-15th, 16th-end of month) from
+   START_YEAR/START_MONTH through the current period, and for each one calls
+   clockify_report.run_period() — the exact same function `main()` uses for a
+   single period — so behavior (project split, category detection, dropdown
+   chip inheritance) is identical to running the tool normally.
+3. Is naturally idempotent: run_period()/write_report_sheet() overwrite a
+   tab's data in place if it already exists.
 
 Usage:
     python migrate_split_sheets.py
 
 Env (.env):
-    LEGACY_SPREADSHEET_ID        the current combined spreadsheet (required)
     HOTSPOTAPP_SPREADSHEET_ID    if unset, this script creates it and prints
     HYDROCOIN_SPREADSHEET_ID     the id to add to .env
-    GOOGLE_ACCOUNT_EMAIL         Google account to share new spreadsheets with
 """
 
+import calendar
+import datetime
 import os
 import sys
 
@@ -34,10 +40,10 @@ load_dotenv()
 from googleapiclient.discovery import build
 
 from clockify_report import (
-    get_credentials, list_sheets, _period_sort_key, PROJECT_TAB_NAME, SERVICE_ACCOUNT_JSON,
+    get_credentials, get_sheets_service, run_period, period_label, current_period,
+    SERVICE_ACCOUNT_JSON,
 )
 
-LEGACY_SPREADSHEET_ID = os.environ["LEGACY_SPREADSHEET_ID"]
 GOOGLE_ACCOUNT_EMAIL = os.environ.get(
     "GOOGLE_ACCOUNT_EMAIL", "abreham.gmedhin12@gmail.com"
 )
@@ -46,6 +52,11 @@ GOOGLE_ACCOUNT_EMAIL = os.environ.get(
 DEST_ENV_VAR = {"HotSpotApp": "HOTSPOTAPP_SPREADSHEET_ID", "HydroCoin": "HYDROCOIN_SPREADSHEET_ID"}
 DEST_TITLE = {"HotSpotApp": "HotSpotApp Time Tracking", "HydroCoin": "HydroCoin Time Tracking"}
 
+# First calendar month tracking began. The very first period (Nov 5-15, 2025)
+# is irregular, but querying the full Nov 1-15 range is harmless — Clockify
+# simply has no entries before tracking started.
+START_YEAR, START_MONTH = 2025, 11
+
 
 def create_spreadsheet(sheets_service, drive_service, title: str) -> str:
     resp = sheets_service.spreadsheets().create(
@@ -53,9 +64,6 @@ def create_spreadsheet(sheets_service, drive_service, title: str) -> str:
     ).execute()
     spreadsheet_id = resp["spreadsheetId"]
     if drive_service is not None:
-        # Only needed for a service account: it owns the new file, so the user
-        # needs to be added to see/edit it. With OAuth, the authenticated
-        # user's own account already owns the file — nothing to share.
         drive_service.permissions().create(
             fileId=spreadsheet_id,
             body={"type": "user", "role": "writer", "emailAddress": GOOGLE_ACCOUNT_EMAIL},
@@ -67,71 +75,59 @@ def create_spreadsheet(sheets_service, drive_service, title: str) -> str:
     return spreadsheet_id
 
 
-def copy_tab(sheets_service, source_id: str, source_sheet_id: int,
-             dest_id: str, title: str) -> None:
-    resp = sheets_service.spreadsheets().sheets().copyTo(
-        spreadsheetId=source_id,
-        sheetId=source_sheet_id,
-        body={"destinationSpreadsheetId": dest_id},
-    ).execute()
-    new_sheet_id = resp["sheetId"]
-    # copyTo names the new tab "Copy of <title>" — rename it back.
-    sheets_service.spreadsheets().batchUpdate(
-        spreadsheetId=dest_id,
-        body={"requests": [{
-            "updateSheetProperties": {
-                "properties": {"sheetId": new_sheet_id, "title": title},
-                "fields": "title",
-            }
-        }]},
-    ).execute()
+def semimonthly_periods_through_today(
+    start_year: int, start_month: int,
+) -> list[tuple[datetime.date, datetime.date]]:
+    """All (start, end) semi-monthly periods from start_year/start_month
+    through today's current period, inclusive."""
+    today = datetime.date.today()
+    periods = []
+    year, month = start_year, start_month
+    while True:
+        periods.append((datetime.date(year, month, 1), datetime.date(year, month, 15)))
+        if year == today.year and month == today.month and today.day <= 15:
+            break
+        last_day = calendar.monthrange(year, month)[1]
+        periods.append((datetime.date(year, month, 16), datetime.date(year, month, last_day)))
+        if year == today.year and month == today.month:
+            break
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+    return periods
 
 
 def main() -> None:
     creds = get_credentials()
     sheets_service = build("sheets", "v4", credentials=creds)
-    # Sharing is only needed (and only authorized) when running as a service account.
     drive_service = build("drive", "v3", credentials=creds) if SERVICE_ACCOUNT_JSON else None
 
-    dest_ids = {}
     for project, env_var in DEST_ENV_VAR.items():
-        existing = os.environ.get(env_var)
-        if existing:
-            dest_ids[project] = existing
-            print(f"Using existing {env_var}={existing} for {project}")
-        else:
+        if not os.environ.get(env_var):
             print(f"No {env_var} set — creating a new spreadsheet for {project}…")
-            dest_ids[project] = create_spreadsheet(
-                sheets_service, drive_service, DEST_TITLE[project]
-            )
+            spreadsheet_id = create_spreadsheet(sheets_service, drive_service, DEST_TITLE[project])
+            os.environ[env_var] = spreadsheet_id  # so clockify_report picks it up this run
 
-    legacy_sheets = list_sheets(sheets_service, LEGACY_SPREADSHEET_ID)
+    # Re-import-safe: clockify_report reads SPREADSHEET_IDS from os.environ at
+    # import time, which already happened above via the `from clockify_report
+    # import ...` at module load. If we just created new ids, refresh it here.
+    import clockify_report
+    clockify_report.SPREADSHEET_IDS = {
+        project: os.environ[env_var] for project, env_var in DEST_ENV_VAR.items()
+    }
 
-    for project, dest_id in dest_ids.items():
-        suffix = f" - {PROJECT_TAB_NAME[project]}"
-        tabs = sorted(
-            ((title, sid) for title, sid in legacy_sheets if title.endswith(suffix)),
-            key=lambda ts: _period_sort_key(ts[0]),
-        )
-        if not tabs:
-            print(f"\n{project}: no tabs found in legacy spreadsheet, nothing to copy.")
-            continue
+    periods = semimonthly_periods_through_today(START_YEAR, START_MONTH)
+    print(f"\nBackfilling {len(periods)} periods from Clockify "
+          f"({period_label(*periods[0])} → {period_label(*periods[-1])})…")
 
-        print(f"\n{project}: {len(tabs)} tab(s) to copy →")
-        existing_dest_titles = {t for t, _ in list_sheets(sheets_service, dest_id)}
-        for title, sheet_id in tabs:
-            if title in existing_dest_titles:
-                print(f"  skip '{title}' (already present)")
-                continue
-            copy_tab(sheets_service, LEGACY_SPREADSHEET_ID, sheet_id, dest_id, title)
-            print(f"  copied '{title}'")
+    for start, end in periods:
+        run_period(sheets_service, start, end)
 
     print("\nDone. Add these to .env if not already present:")
     for project, env_var in DEST_ENV_VAR.items():
-        print(f"  {env_var}={dest_ids[project]}")
-        print(f"    https://docs.google.com/spreadsheets/d/{dest_ids[project]}/edit")
-    print(f"\nLegacy spreadsheet was not modified: "
-          f"https://docs.google.com/spreadsheets/d/{LEGACY_SPREADSHEET_ID}/edit")
+        sid = os.environ[env_var]
+        print(f"  {env_var}={sid}")
+        print(f"    https://docs.google.com/spreadsheets/d/{sid}/edit")
 
 
 if __name__ == "__main__":

@@ -300,9 +300,28 @@ _MONTHS = {m: i for i, m in enumerate(
 _TAB_RE = re.compile(r"^([A-Za-z]+)\s+(\d+)\s*-\s*\d+,\s*(\d+)\s*-\s*\S+")
 
 
+def execute_with_retry(request, max_retries: int = 6):
+    """Run a Sheets API request, retrying with backoff on rate-limit (429)
+    errors. Bulk operations (e.g. backfilling many periods) can burn through
+    the 60-writes/minute-per-user quota well before finishing."""
+    from googleapiclient.errors import HttpError
+    import time as _time
+
+    for attempt in range(max_retries):
+        try:
+            return request.execute()
+        except HttpError as e:
+            if e.resp.status == 429 and attempt < max_retries - 1:
+                wait = 2 ** attempt
+                print(f"   (rate limited by Sheets API, retrying in {wait}s…)")
+                _time.sleep(wait)
+                continue
+            raise
+
+
 def list_sheets(service, spreadsheet_id: str) -> list[tuple[str, int]]:
     """Return [(title, sheetId), ...] for every tab in the spreadsheet."""
-    meta = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    meta = execute_with_retry(service.spreadsheets().get(spreadsheetId=spreadsheet_id))
     return [(s["properties"]["title"], s["properties"]["sheetId"])
             for s in meta["sheets"]]
 
@@ -337,10 +356,8 @@ def add_sheet(service, spreadsheet_id: str, title: str, index: int | None = None
     if index is not None:
         props["index"] = index
     body = {"requests": [{"addSheet": {"properties": props}}]}
-    resp = (
-        service.spreadsheets()
-        .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
-        .execute()
+    resp = execute_with_retry(
+        service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body)
     )
     return resp["replies"][0]["addSheet"]["properties"]["sheetId"]
 
@@ -353,10 +370,8 @@ def duplicate_sheet(
     if index is not None:
         dup["insertSheetIndex"] = index
     body = {"requests": [{"duplicateSheet": dup}]}
-    resp = (
-        service.spreadsheets()
-        .batchUpdate(spreadsheetId=spreadsheet_id, body=body)
-        .execute()
+    resp = execute_with_retry(
+        service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=body)
     )
     return resp["replies"][0]["duplicateSheet"]["properties"]["sheetId"]
 
@@ -398,9 +413,9 @@ def write_report_sheet(
 
     # Wipe any inherited/old data before writing fresh values (keeps formatting
     # and the colored dropdown validation, which live on the cells, not values).
-    service.spreadsheets().values().clear(
+    execute_with_retry(service.spreadsheets().values().clear(
         spreadsheetId=spreadsheet_id, range=f"'{sheet_title}'!A2:Z1000",
-    ).execute()
+    ))
 
     # Header + data + a totals row that sums the time column (matching the
     # manual sheet). With USER_ENTERED, "0:57:00" strings parse as durations,
@@ -411,12 +426,12 @@ def write_report_sheet(
 
     all_values = header + rows + [total_row]
 
-    service.spreadsheets().values().update(
+    execute_with_retry(service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
         range=f"'{sheet_title}'!A1",
         valueInputOption="USER_ENTERED",
         body={"values": all_values},
-    ).execute()
+    ))
 
     # ── Formatting ──────────────────────────────────────────────────────────
     num_rows = len(all_values)
@@ -526,9 +541,9 @@ def write_report_sheet(
             }
         })
 
-    service.spreadsheets().batchUpdate(
+    execute_with_retry(service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id, body={"requests": requests}
-    ).execute()
+    ))
 
     print(f"  ✓ Wrote {len(rows)} entries to '{sheet_title}'.")
 
@@ -537,18 +552,13 @@ def write_report_sheet(
 # 5.  Main
 # ════════════════════════════════════════════════════════════════════════════
 
-def main() -> None:
-    # ── Determine date range ─────────────────────────────────────────────
-    if len(sys.argv) == 3:
-        start = datetime.date.fromisoformat(sys.argv[1])
-        end   = datetime.date.fromisoformat(sys.argv[2])
-    else:
-        start, end = current_period()
-
+def run_period(service, start: datetime.date, end: datetime.date) -> list[str]:
+    """Fetch one period from Clockify and write each project's tab. Returns the
+    list of projects actually written (used by main() and by backfill/migration
+    tooling that loops over many periods)."""
     label = period_label(start, end)
     print(f"\n📅  Reporting period: {label}  ({start} → {end})")
 
-    # ── Fetch from Clockify ───────────────────────────────────────────────
     print("\n⏱  Fetching time entries from Clockify …")
     user_id = get_user_id()
     entries = get_time_entries(WORKSPACE_ID, user_id, start, end)
@@ -556,25 +566,17 @@ def main() -> None:
 
     if not entries:
         print("No entries found. Nothing to write.")
-        return
+        return []
 
-    # ── Group by project ──────────────────────────────────────────────────
     groups = group_entries(entries)
     for project, items in groups.items():
         print(f"   {project}: {len(items)} entries")
 
-    unrecognised = [
-        e for e in entries
-        if resolve_project(e) is None
-    ]
+    unrecognised = [e for e in entries if resolve_project(e) is None]
     if unrecognised:
         names = {(e.get("project") or {}).get("name", "—") for e in unrecognised}
         print(f"   ⚠️  {len(unrecognised)} entries skipped (unknown projects: {names})")
         print("      → Add them to PROJECT_MAP in the script to include them.")
-
-    # ── Write to Google Sheets ────────────────────────────────────────────
-    print("\n📊  Connecting to Google Sheets …")
-    service = get_sheets_service()
 
     written_projects = []
     for project, items in groups.items():
@@ -586,6 +588,22 @@ def main() -> None:
         rows = build_rows(items)
         write_report_sheet(service, SPREADSHEET_IDS[project], title, rows, project)
         written_projects.append(project)
+
+    return written_projects
+
+
+def main() -> None:
+    # ── Determine date range ─────────────────────────────────────────────
+    if len(sys.argv) == 3:
+        start = datetime.date.fromisoformat(sys.argv[1])
+        end   = datetime.date.fromisoformat(sys.argv[2])
+    else:
+        start, end = current_period()
+
+    print("\n📊  Connecting to Google Sheets …")
+    service = get_sheets_service()
+
+    written_projects = run_period(service, start, end)
 
     print("\n✅  Done! Open your spreadsheets:")
     for project in written_projects:
