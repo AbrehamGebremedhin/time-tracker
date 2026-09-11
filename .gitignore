@@ -15,3 +15,7 @@ wheels/
 # Secrets
 client_secret_*.apps.googleusercontent.com.json
 token.json
+service_account*.json
+
+# Runtime state (personal, changes independently of the code)
+rates.json

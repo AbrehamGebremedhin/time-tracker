@@ -42,12 +42,47 @@ You need one of the two options below.
 ```ini
 CLOCKIFY_API_KEY=your_clockify_api_key_here
 CLOCKIFY_WORKSPACE_ID=your_workspace_id_here
-SPREADSHEET_ID=1UbBnREctjAiUy-W7rf1gPpVGFlWmTZpCiHCR6ll2VQM
+
+# One spreadsheet per project — see step 4b if you're migrating from a single
+# combined spreadsheet.
+HOTSPOTAPP_SPREADSHEET_ID=
+HYDROCOIN_SPREADSHEET_ID=
 
 # Choose ONE of these:
 GOOGLE_SERVICE_ACCOUNT_JSON=path/to/service_account.json
 # GOOGLE_OAUTH_CREDENTIALS=path/to/oauth_credentials.json
+
+# Telegram bot (from @BotFather)
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_ALLOWED_IDS=
 ```
+
+---
+
+## 4b. Migrating from one combined spreadsheet
+
+If you already have a combined spreadsheet with both projects' tabs (the old
+single-`SPREADSHEET_ID` setup), migrate it once instead of starting fresh:
+
+```ini
+# add to .env, in place of the old SPREADSHEET_ID
+LEGACY_SPREADSHEET_ID=1UbBnREctjAiUy-W7rf1gPpVGFlWmTZpCiHCR6ll2VQM
+# leave HOTSPOTAPP_SPREADSHEET_ID / HYDROCOIN_SPREADSHEET_ID empty — the script fills them in
+```
+
+```bash
+python migrate_split_sheets.py
+```
+
+This creates the two new spreadsheets, shares each with `GOOGLE_ACCOUNT_EMAIL`
+(defaults to your Google account) as Editor, and copies every existing tab into
+the matching new spreadsheet — preserving formatting and the colored `Category`
+dropdown chips (the Sheets API's `copyTo` clones the whole sheet, not just
+values). The legacy spreadsheet is **not modified** — this is a copy, not a
+move — so it stays as a backup until you've confirmed the new sheets look right.
+
+It's safe to re-run: it skips any tab title that already exists in its
+destination spreadsheet. Paste the two ids it prints into `.env`.
 
 ---
 
@@ -85,9 +120,9 @@ python clockify_report.py 2026-04-16 2026-04-30
 The script will:
 1. Pull all time entries from Clockify for the period
 2. Split them into **HotSpotApp** and **HydroCoin**
-3. Create two new sheets in your spreadsheet, e.g.:
-   - `HotSpotApp May 1-15, 2026`
-   - `HydroCoin May 1-15, 2026`
+3. Write one tab into each project's spreadsheet, e.g.:
+   - `HotSpotApp Time Tracking` → `May 1 - 15, 2026 - Hotspotapp`
+   - `HydroCoin Time Tracking` → `May 1 - 15, 2026 - Hydrocoin`
 
 ---
 
@@ -101,6 +136,27 @@ Run on the 15th and last day of every month:
 ```
 
 Or more simply, use a cron service / GitHub Action / task scheduler.
+
+---
+
+## Running the bot continuously (systemd)
+
+`bot.py` long-polls Telegram in a `while True` loop, so it needs to stay running.
+On a Linux VPS, run it as a systemd service using the unit file in
+[deploy/time-tracker-bot.service](deploy/time-tracker-bot.service) (paths already
+point at this repo's location):
+
+```bash
+sudo cp deploy/time-tracker-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now time-tracker-bot
+sudo systemctl status time-tracker-bot
+journalctl -u time-tracker-bot -f     # tail logs
+```
+
+Make sure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_IDS` are set in `.env` first
+— get the token from [@BotFather](https://t.me/BotFather), and your chat id by
+messaging your bot once and checking `https://api.telegram.org/bot<TOKEN>/getUpdates`.
 
 ---
 

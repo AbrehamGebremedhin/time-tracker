@@ -32,20 +32,25 @@ from googleapiclient.discovery import build
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request as GoogleAuthRequest
 
 load_dotenv()
 
 # ── Config ──────────────────────────────────────────────────────────────────
 CLOCKIFY_API_KEY    = os.environ["CLOCKIFY_API_KEY"]
 WORKSPACE_ID        = os.environ["CLOCKIFY_WORKSPACE_ID"]
-SPREADSHEET_ID      = os.environ.get(
-    "SPREADSHEET_ID",
-    "1UbBnREctjAiUy-W7rf1gPpVGFlWmTZpCiHCR6ll2VQM",
-)
+# One spreadsheet per project (previously a single shared SPREADSHEET_ID).
+SPREADSHEET_IDS: dict[str, str] = {
+    "HotSpotApp": os.environ["HOTSPOTAPP_SPREADSHEET_ID"],
+    "HydroCoin":  os.environ["HYDROCOIN_SPREADSHEET_ID"],
+}
 SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
 OAUTH_CREDENTIALS    = os.environ.get("GOOGLE_OAUTH_CREDENTIALS")
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",  # needed to create/share spreadsheets (migration)
+]
 
 # Map lowercase Clockify project names → canonical report label
 PROJECT_MAP: dict[str, str] = {
@@ -255,9 +260,9 @@ def build_rows(entries: list[dict]) -> list[list]:
 # 4.  Google Sheets helpers
 # ════════════════════════════════════════════════════════════════════════════
 
-def get_sheets_service():
+def get_credentials():
     if SERVICE_ACCOUNT_JSON:
-        creds = service_account.Credentials.from_service_account_file(
+        return service_account.Credentials.from_service_account_file(
             SERVICE_ACCOUNT_JSON, scopes=SCOPES
         )
     elif OAUTH_CREDENTIALS:
@@ -265,16 +270,26 @@ def get_sheets_service():
         creds = None
         if os.path.exists(token_path):
             creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+        if creds and not creds.valid and creds.expired and creds.refresh_token:
+            # Expired access token but we have a refresh token — refresh instead
+            # of opening a browser (needed for headless/server use).
+            creds.refresh(GoogleAuthRequest())
+            with open(token_path, "w") as fh:
+                fh.write(creds.to_json())
         if not creds or not creds.valid:
             flow = InstalledAppFlow.from_client_secrets_file(OAUTH_CREDENTIALS, SCOPES)
             creds = flow.run_local_server(port=0)
             with open(token_path, "w") as fh:
                 fh.write(creds.to_json())
+        return creds
     else:
         raise EnvironmentError(
             "Set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_OAUTH_CREDENTIALS."
         )
-    return build("sheets", "v4", credentials=creds)
+
+
+def get_sheets_service():
+    return build("sheets", "v4", credentials=get_credentials())
 
 
 _MONTHS = {m: i for i, m in enumerate(
@@ -561,6 +576,7 @@ def main() -> None:
     print("\n📊  Connecting to Google Sheets …")
     service = get_sheets_service()
 
+    written_projects = []
     for project, items in groups.items():
         if not items:
             print(f"  ⚠️  No entries for {project} — skipping sheet creation.")
@@ -568,10 +584,14 @@ def main() -> None:
 
         title = sheet_title(project, start, end)
         rows = build_rows(items)
-        write_report_sheet(service, SPREADSHEET_ID, title, rows, project)
+        write_report_sheet(service, SPREADSHEET_IDS[project], title, rows, project)
+        written_projects.append(project)
 
-    print(f"\n✅  Done! Open your spreadsheet:\n"
-          f"    https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}/edit\n")
+    print("\n✅  Done! Open your spreadsheets:")
+    for project in written_projects:
+        print(f"    {project}: "
+              f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_IDS[project]}/edit")
+    print()
 
 
 if __name__ == "__main__":

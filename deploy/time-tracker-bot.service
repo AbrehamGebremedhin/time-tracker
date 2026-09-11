@@ -1,0 +1,14 @@
+[Unit]
+Description=Time tracker Telegram bot
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/abreham/Projects/time-tracker
+EnvironmentFile=/home/abreham/Projects/time-tracker/.env
+ExecStart=/home/abreham/Projects/time-tracker/.venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

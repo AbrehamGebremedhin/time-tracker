@@ -2,8 +2,11 @@
 Telegram bot wrapper around the Clockify tools.
 
 Commands:
-    /report [start end]   → generate the Google Sheets report (current period if no dates)
-    /timeline [date]      → print a day's task timeline (today if no date)
+    /report [start end]        → generate the Google Sheets report (current period if no dates)
+    /timeline [date]           → print a day's task timeline (today if no date)
+    /setrate <amount> [date]   → set the hourly rate, effective from date (today if no date)
+    /rates                     → show the hourly-rate history
+    /earnings [month|total]    → earnings for a month (current if none) or all-time
 
 Long-polls Telegram's HTTP API with `requests` (no extra dependency) and reuses
 the existing CLI `main()` functions by capturing their stdout.
@@ -13,6 +16,7 @@ Env (add to .env):
     TELEGRAM_ALLOWED_IDS=11111111,22222222  # chat ids allowed to use it (optional but recommended)
 """
 
+import datetime
 import io
 import os
 import sys
@@ -27,7 +31,14 @@ TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN")
 ALLOWED = {int(x) for x in os.environ.get("TELEGRAM_ALLOWED_IDS", "").split(",") if x.strip()}
 API     = f"https://api.telegram.org/bot{TOKEN}"
 
-HELP = "Commands:\n/report [YYYY-MM-DD YYYY-MM-DD]\n/timeline [YYYY-MM-DD]"
+HELP = (
+    "Commands:\n"
+    "/report [YYYY-MM-DD YYYY-MM-DD]\n"
+    "/timeline [YYYY-MM-DD]\n"
+    "/setrate <amount> [YYYY-MM-DD]\n"
+    "/rates\n"
+    "/earnings [YYYY-MM|total]"
+)
 
 
 def run_capture(func, argv) -> str:
@@ -52,6 +63,23 @@ def handle(text: str) -> str:
     if cmd == "/timeline":
         import daily_timeline
         return run_capture(daily_timeline.main, ["daily_timeline.py", *args])
+    if cmd == "/earnings":
+        import earnings
+        return run_capture(earnings.main, ["earnings.py", *args])
+    if cmd == "/rates":
+        import rates
+        return rates.format_rates()
+    if cmd == "/setrate":
+        import rates
+        if not args:
+            return "Usage: /setrate <amount> [YYYY-MM-DD]"
+        try:
+            amount = float(args[0])
+            effective = datetime.date.fromisoformat(args[1]) if len(args) > 1 else datetime.date.today()
+        except ValueError as e:
+            return f"Invalid /setrate arguments: {e}"
+        history = rates.add_rate(amount, effective)
+        return f"Rate set: ${amount:.2f}/hr from {effective:%b %d, %Y}\n\n{rates.format_rates(history)}"
     return HELP
 
 

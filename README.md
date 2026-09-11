@@ -1,13 +1,16 @@
 # time-tracker
 
 Pulls time entries from [Clockify](https://clockify.me) for a reporting period,
-splits them by project, and writes a formatted tab into a shared Google Sheet —
-reproducing the layout that was previously maintained by hand. Also includes a
-daily task timeline and a Telegram bot wrapper for running both remotely.
+splits them by project, and writes a formatted tab into each project's Google
+Sheet — reproducing the layout that was previously maintained by hand. Also
+includes a daily task timeline, hourly-rate/earnings tracking, and a Telegram
+bot for running all of it remotely.
 
 Each run produces one tab per project, e.g. `June 1 - 15, 2026 - Hydrocoin`, with
 columns **ID · Date · Task · Category · Time taken (HH:MM:SS)**, a colored
-`Category` dropdown, and a total of the time column.
+`Category` dropdown, and a total of the time column. HotSpotApp and HydroCoin
+each have their **own spreadsheet** (`HOTSPOTAPP_SPREADSHEET_ID` /
+`HYDROCOIN_SPREADSHEET_ID`).
 
 ## How it works
 
@@ -15,10 +18,11 @@ columns **ID · Date · Task · Category · Time taken (HH:MM:SS)**, a colored
 2. Groups them by project using `PROJECT_MAP` and assigns a category from the
    description prefix (`Meeting:` → Meeting, `Onboarding:` → Onboarding, else
    Task), or a matching tag if you use tags instead.
-3. For each project, creates a new tab in the spreadsheet by **duplicating the most
-   recent existing tab for that project**, then writes the fresh data into it.
-   Duplicating is deliberate: the Sheets API can't set dropdown *chip colors*, so
-   copying a prior tab is the only way to keep the green/blue/gray `Category` chips.
+3. For each project, creates a new tab in that project's spreadsheet by
+   **duplicating the most recent existing tab for that project**, then writes
+   the fresh data into it. Duplicating is deliberate: the Sheets API can't set
+   dropdown *chip colors*, so copying a prior tab is the only way to keep the
+   green/blue/gray `Category` chips.
 
 ## Setup
 
@@ -33,17 +37,35 @@ Create a `.env` file:
 ```ini
 CLOCKIFY_API_KEY=your_clockify_api_key
 CLOCKIFY_WORKSPACE_ID=your_workspace_id
-SPREADSHEET_ID=your_google_spreadsheet_id
+HOTSPOTAPP_SPREADSHEET_ID=your_hotspotapp_spreadsheet_id
+HYDROCOIN_SPREADSHEET_ID=your_hydrocoin_spreadsheet_id
 
-# Pick ONE Google auth method:
-GOOGLE_OAUTH_CREDENTIALS=client_secret_xxx.apps.googleusercontent.com.json
-# GOOGLE_SERVICE_ACCOUNT_JSON=path/to/service_account.json
+# Pick ONE Google auth method — service account recommended for an unattended bot:
+GOOGLE_SERVICE_ACCOUNT_JSON=path/to/service_account.json
+# GOOGLE_OAUTH_CREDENTIALS=client_secret_xxx.apps.googleusercontent.com.json
+
+TELEGRAM_BOT_TOKEN=123:abc...           # from @BotFather
+TELEGRAM_ALLOWED_IDS=11111111,22222222  # chat ids allowed to use it (optional but recommended)
 ```
 
+- **Service account** — no browser needed, works headless (e.g. on a VPS); share
+  each spreadsheet with the service-account email as an Editor.
 - **OAuth (Desktop app)** — opens a browser on first run and caches `token.json`.
   The Google Cloud OAuth consent screen must list your account as a **test user**.
-- **Service account** — better for unattended/cron runs; share the spreadsheet
-  with the service-account email as an Editor.
+  Not suitable for a headless server once the cached token needs re-consent.
+
+### Migrating from one combined spreadsheet
+
+If you're moving from the old single-spreadsheet setup, run the one-off migration
+once (see [SETUP.md](SETUP.md#migrating-from-one-combined-spreadsheet)):
+
+```bash
+python migrate_split_sheets.py
+```
+
+It creates the two new spreadsheets (or reuses ids already in `.env`), copies every
+existing tab over (preserving formatting and dropdown chip colors), and leaves the
+old combined spreadsheet untouched.
 
 ## Usage
 
@@ -63,22 +85,34 @@ python daily_timeline.py
 python daily_timeline.py 2026-06-15
 ```
 
+```bash
+# Earnings for a month (current month if omitted), or "total" for all-time
+python earnings.py
+python earnings.py 2026-06
+python earnings.py total
+```
+
+Your hourly-rate history lives in `rates.json` (gitignored, not committed) and is
+edited via the Telegram bot's `/setrate` command, or by hand.
+
 ### Telegram bot
 
-Run both commands remotely via Telegram instead of the CLI:
+Run all of the above remotely via Telegram instead of the CLI:
 
 ```bash
 python bot.py     # or: uv run bot
 ```
 
-Add to `.env`:
+Chat commands:
 
-```ini
-TELEGRAM_BOT_TOKEN=123:abc...           # from @BotFather
-TELEGRAM_ALLOWED_IDS=11111111,22222222  # chat ids allowed to use it (optional but recommended)
-```
+- `/report [start end]` — generate the Google Sheets report
+- `/timeline [date]` — a day's task timeline
+- `/setrate <amount> [date]` — set the hourly rate, effective from `date` (today if omitted)
+- `/rates` — show the hourly-rate history
+- `/earnings [month|total]` — earnings for a month (current if omitted) or all-time
 
-Chat commands: `/report [start end]`, `/timeline [date]`.
+For a bot that stays online continuously (e.g. on a VPS), see
+[SETUP.md](SETUP.md#running-the-bot-continuously-systemd) for a systemd unit.
 
 ## Configuration
 
@@ -97,13 +131,16 @@ Edit these in [clockify_report.py](clockify_report.py):
   once by hand and future tabs will inherit it.
 - If a period has more entries than the source tab's dropdown range, the extra rows
   won't have a `Category` dropdown.
-- `.env`, `token.json`, and the OAuth client secret are gitignored — keep them out
-  of version control.
+- `.env`, `token.json`, `rates.json`, and the OAuth client secret are gitignored —
+  keep them out of version control.
 
 ## Tests
 
+Each `test_*.py` file is a standalone script of plain `test_` functions (no
+`unittest.TestCase`, so `unittest discover` won't find them):
+
 ```bash
-python -m unittest discover -p "test_*.py"
+for f in test_*.py; do python "$f"; done
 ```
 
 ## Automation
