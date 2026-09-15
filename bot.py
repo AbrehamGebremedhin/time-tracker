@@ -117,11 +117,12 @@ def handle(text: str) -> str:
         return rates.format_rates()
     if cmd == "/setrate":
         import rates
+        from clockify_report import today
         if not args:
             return "Usage: /setrate <amount>, optionally followed by an effective date (YYYY-MM-DD)."
         try:
             amount = float(args[0])
-            effective = datetime.date.fromisoformat(args[1]) if len(args) > 1 else datetime.date.today()
+            effective = datetime.date.fromisoformat(args[1]) if len(args) > 1 else today()
         except ValueError as e:
             return f"Invalid /setrate arguments: {e}"
         history = rates.add_rate(amount, effective)

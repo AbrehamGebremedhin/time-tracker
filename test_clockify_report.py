@@ -4,7 +4,9 @@ import datetime
 from clockify_report import (
     parse_duration, format_duration, format_task, resolve_project,
     group_entries, build_rows, period_label, sheet_title, current_period,
-    _period_sort_key, find_template_sheet,
+    _period_sort_key, find_template_sheet, chip_source, format_requests,
+    to_clockify_bound,
+    last_data_row_from_column, COLUMN_WIDTHS, CHIP_TEMPLATE_TAB,
 )
 
 
@@ -100,6 +102,53 @@ def test_template_picks_most_recent():
     # excludes the target title, picks latest period for the project
     assert find_template_sheet(sheets, "Hydrocoin", "June 1 - 15, 2026 - Hydrocoin")[1] == 2
     assert find_template_sheet(sheets, "Nonexistent", "x") is None
+
+
+def test_clockify_bounds_are_local_wall_clock():
+    # Regression guard: Clockify reads these bounds in the workspace timezone
+    # and ignores the Z, so converting local→UTC here shifts every window by
+    # the offset (3h for GMT+3) and misfiles late-evening entries.
+    day = datetime.date(2026, 9, 15)
+    assert to_clockify_bound(day) == "2026-09-15T00:00:00Z"
+    assert to_clockify_bound(day, end_of_day=True) == "2026-09-15T23:59:59Z"
+
+
+def test_chip_source_prefers_template_tab():
+    sheets = [("May 1 - 15, 2026 - Hydrocoin", 1), (CHIP_TEMPLATE_TAB, 99)]
+    assert chip_source(sheets, "Hydrocoin", "June 1 - 15, 2026 - Hydrocoin")[1] == 99
+    # falls back to the most recent project tab when there's no template
+    assert chip_source(sheets[:1], "Hydrocoin", "June 1 - 15, 2026 - Hydrocoin")[1] == 1
+    assert chip_source([], "Hydrocoin", "x") is None
+
+
+def test_last_data_row_from_column():
+    # header, three entries, blank totals row
+    assert last_data_row_from_column([["ID"], ["1"], ["2"], ["3"], []]) == 4
+    assert last_data_row_from_column([["ID"], ["1"]]) == 2
+    assert last_data_row_from_column([["ID"]]) == 1      # header only
+    assert last_data_row_from_column([]) == 1            # empty tab
+    # a trailing blank-but-present row must not count as data
+    assert last_data_row_from_column([["ID"], ["1"], [""]]) == 2
+
+
+def test_format_requests_sets_every_column_width():
+    reqs = format_requests(sheet_id=7, last_data_row=5)
+    widths = [
+        (r["updateDimensionProperties"]["range"]["startIndex"],
+         r["updateDimensionProperties"]["properties"]["pixelSize"])
+        for r in reqs if "updateDimensionProperties" in r
+    ]
+    assert widths == list(enumerate(COLUMN_WIDTHS))
+
+    validations = [r["setDataValidation"] for r in reqs if "setDataValidation" in r]
+    assert len(validations) == 2                     # data rows + clear below
+    assert validations[0]["range"]["endRowIndex"] == 5
+    assert validations[0]["rule"]["condition"]["type"] == "ONE_OF_LIST"
+    assert validations[1]["range"]["startRowIndex"] == 5
+    assert "rule" not in validations[1]              # clears, not sets
+
+    # An empty tab has no data rows to validate.
+    assert not [r for r in format_requests(7, 1) if "setDataValidation" in r]
 
 
 if __name__ == "__main__":

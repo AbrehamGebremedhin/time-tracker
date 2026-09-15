@@ -64,32 +64,61 @@ PROJECT_MAP: dict[str, str] = {
 # Project label as it appears in the manual tab names: "Hydrocoin", "Hotspotapp"
 PROJECT_TAB_NAME = {"HotSpotApp": "Hotspotapp", "HydroCoin": "Hydrocoin"}
 
+# ── Tab appearance ──────────────────────────────────────────────────────────
+# Pixel widths for ID · Date · Task · Category · Time, read off the hand-made
+# tabs in the original spreadsheet. Task holds long freeform text so it gets
+# the room; the others are short and fixed-shape. Note that "let Task overflow"
+# doesn't work here — overflow only happens into an *empty* neighbour, and
+# Category always has a value — so Task needs a real width.
+COLUMN_WIDTHS = (21, 82, 894, 146, 150)
+
+CATEGORY_VALUES = ("Task", "Onboarding", "Meeting")
+
+# A hidden tab holding one colored Category dropdown, copied from the original
+# hand-colored spreadsheet. Chip colors appear nowhere in the Sheets API — not
+# in DataValidationRule, not as conditional formats, not as cell backgrounds —
+# so the only way to put them on a tab is a server-side copy from a tab that
+# already has them. This tab is that source.
+CHIP_TEMPLATE_TAB = "_chip template"
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # 1.  Date helpers
 # ════════════════════════════════════════════════════════════════════════════
 
+# Where the work is done. Every "what day is it" question resolves here rather
+# than against the machine clock, because the bot runs on a server that may be
+# set to UTC — and between 00:00 and 03:00 local, UTC is still on yesterday's
+# date, which would pick the wrong reporting period or month.
+LOCAL_TZ = ZoneInfo("Africa/Addis_Ababa")
+
+
+def today() -> datetime.date:
+    """Today's date in LOCAL_TZ, not the machine's timezone."""
+    return datetime.datetime.now(LOCAL_TZ).date()
+
+
 def current_period() -> tuple[datetime.date, datetime.date]:
     """Return (start, end) for the current reporting period (1–15 or 16–EOM)."""
-    today = datetime.date.today()
-    if today.day <= 15:
-        start = today.replace(day=1)
-        end   = today.replace(day=15)
+    now = today()
+    if now.day <= 15:
+        start = now.replace(day=1)
+        end   = now.replace(day=15)
     else:
-        start = today.replace(day=16)
+        start = now.replace(day=16)
         # last day of month
-        next_month = today.replace(day=28) + datetime.timedelta(days=4)
+        next_month = now.replace(day=28) + datetime.timedelta(days=4)
         end = next_month - datetime.timedelta(days=next_month.day)
     return start, end
 
 
 def previous_period() -> tuple[datetime.date, datetime.date]:
     """Return (start, end) for the semi-monthly period before the current one."""
-    today = datetime.date.today()
-    if today.day <= 15:
-        prior_month_last_day = today.replace(day=1) - datetime.timedelta(days=1)
+    now = today()
+    if now.day <= 15:
+        prior_month_last_day = now.replace(day=1) - datetime.timedelta(days=1)
         return prior_month_last_day.replace(day=16), prior_month_last_day
-    return today.replace(day=1), today.replace(day=15)
+    return now.replace(day=1), now.replace(day=15)
 
 
 def period_label(start: datetime.date, end: datetime.date) -> str:
@@ -107,12 +136,17 @@ def sheet_title(project: str, start: datetime.date, end: datetime.date) -> str:
     return f"{start:%B} {start.day} - {end:%B} {end.day}, {start.year} - {name}"
 
 
-def to_clockify_utc(d: datetime.date, end_of_day: bool = False) -> str:
-    """Convert a local date to a Clockify-compatible UTC ISO-8601 string."""
-    time = datetime.time(23, 59, 59) if end_of_day else datetime.time(0, 0, 0)
-    local_tz = ZoneInfo("Africa/Addis_Ababa")  # change if needed
-    dt = datetime.datetime.combine(d, time, tzinfo=local_tz)
-    return dt.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ")
+def to_clockify_bound(d: datetime.date, end_of_day: bool = False) -> str:
+    """Format a local date as a start/end bound for Clockify's entry filter.
+
+    Clockify interprets these bounds in the *workspace's* timezone and ignores
+    the trailing `Z`, so the local wall-clock time is sent unconverted. This
+    used to convert local→UTC first, which double-applied the offset and pulled
+    the whole window 3 hours early: entries logged after 21:00 local showed up
+    on the next day's timeline and in the next reporting period.
+    """
+    time = "23:59:59" if end_of_day else "00:00:00"
+    return f"{d.isoformat()}T{time}Z"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -139,8 +173,8 @@ def get_time_entries(
     entries: list[dict] = []
     page = 1
     params = {
-        "start":    to_clockify_utc(start),
-        "end":      to_clockify_utc(end, end_of_day=True),
+        "start":    to_clockify_bound(start),
+        "end":      to_clockify_bound(end, end_of_day=True),
         "hydrated": "true",   # includes project info inline
         "page-size": 50,
     }
@@ -360,6 +394,146 @@ def find_template_sheet(sheets, project_label: str, exclude_title: str):
     return max(candidates, key=lambda ts: _period_sort_key(ts[0]))
 
 
+def chip_source(sheets, project_label: str, exclude_title: str):
+    """Tab to copy the colored Category dropdown from.
+
+    Prefers the dedicated CHIP_TEMPLATE_TAB; falls back to the most recent tab
+    for this project. Returns (title, sheetId) or None.
+    """
+    for title, sid in sheets:
+        if title == CHIP_TEMPLATE_TAB:
+            return (title, sid)
+    return find_template_sheet(sheets, project_label, exclude_title)
+
+
+def last_data_row_from_column(values: list[list]) -> int:
+    """1-based row of the final entry, given column A's values from row 1 down.
+
+    Row 1 is the header and the totals row leaves the ID blank, so the last
+    non-empty cell below row 1 is the last entry. Returns 1 for an empty tab.
+    """
+    last = 1
+    for i, row in enumerate(values, start=1):
+        if i == 1:
+            continue
+        if row and str(row[0]).strip():
+            last = i
+    return last
+
+
+def format_requests(sheet_id: int, last_data_row: int) -> list[dict]:
+    """batchUpdate requests giving a report tab the manual sheet's layout:
+    per-column widths, left alignment, the elapsed-time format on the Time
+    column, and the Category dropdown on the data rows only.
+
+    `last_data_row` is the 1-based row of the final entry (row 1 is the header,
+    the totals row sits just below it). Colors are not set here — see
+    CHIP_TEMPLATE_TAB and chip_paste_request().
+    """
+    num_rows = last_data_row + 1          # + totals row
+    full_range = {
+        "sheetId": sheet_id,
+        "startRowIndex": 0, "endRowIndex": num_rows,
+        "startColumnIndex": 0, "endColumnIndex": 5,
+    }
+    requests: list[dict] = [
+        # Left-align everything; long task text is clipped, not wrapped, so
+        # rows stay one line tall like the manual sheet.
+        {
+            "repeatCell": {
+                "range": full_range,
+                "cell": {"userEnteredFormat": {
+                    "horizontalAlignment": "LEFT",
+                    "wrapStrategy": "CLIP",
+                }},
+                "fields": "userEnteredFormat(horizontalAlignment,wrapStrategy)",
+            }
+        },
+        # Time column as elapsed duration so values and the SUM show as H:MM:SS
+        {
+            "repeatCell": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "startRowIndex": 1, "endRowIndex": num_rows,
+                    "startColumnIndex": 4, "endColumnIndex": 5,
+                },
+                "cell": {"userEnteredFormat": {
+                    "numberFormat": {"type": "TIME", "pattern": "[h]:mm:ss"}
+                }},
+                "fields": "userEnteredFormat.numberFormat",
+            }
+        },
+    ]
+    requests += [
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "sheetId": sheet_id, "dimension": "COLUMNS",
+                    "startIndex": col, "endIndex": col + 1,
+                },
+                "properties": {"pixelSize": width},
+                "fields": "pixelSize",
+            }
+        }
+        for col, width in enumerate(COLUMN_WIDTHS)
+    ]
+
+    if last_data_row < 2:                 # header only — nothing to validate
+        return requests
+
+    # Plain dropdown across the data rows. When a colored source tab exists,
+    # chip_paste_request() overwrites this with the colored version.
+    requests.append({
+        "setDataValidation": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1, "endRowIndex": last_data_row,
+                "startColumnIndex": 3, "endColumnIndex": 4,
+            },
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [{"userEnteredValue": v} for v in CATEGORY_VALUES],
+                },
+                "showCustomUi": True,
+                "strict": True,
+            },
+        }
+    })
+    # Strip any leftover dropdown from the totals row and below.
+    requests.append({
+        "setDataValidation": {
+            "range": {
+                "sheetId": sheet_id,
+                "startRowIndex": last_data_row,
+                "startColumnIndex": 3, "endColumnIndex": 4,
+            },
+        }
+    })
+    return requests
+
+
+def chip_paste_request(sheet_id: int, last_data_row: int, source_sheet_id: int) -> dict:
+    """Copy the colored Category dropdown from `source_sheet_id`'s D2 onto
+    every data row of this tab. A server-side copy is the only thing that
+    carries chip colors, which the API can neither read nor write."""
+    return {
+        "copyPaste": {
+            "source": {
+                "sheetId": source_sheet_id,
+                "startRowIndex": 1, "endRowIndex": 2,
+                "startColumnIndex": 3, "endColumnIndex": 4,
+            },
+            "destination": {
+                "sheetId": sheet_id,
+                "startRowIndex": 1, "endRowIndex": last_data_row,
+                "startColumnIndex": 3, "endColumnIndex": 4,
+            },
+            "pasteType": "PASTE_DATA_VALIDATION",
+        }
+    }
+
+
 def add_sheet(service, spreadsheet_id: str, title: str, index: int | None = None) -> int:
     props = {"title": title}
     if index is not None:
@@ -394,31 +568,24 @@ def write_report_sheet(
 ) -> None:
     """Create (or overwrite) a sheet and write the time-report table.
 
-    New tabs are created by duplicating the most recent existing tab for the
-    same project, so the colored Category dropdown chips carry over (their
-    colors can't be set through the Sheets API).
+    New tabs are created by duplicating a tab that already has the colored
+    Category dropdown, since chip colors can't be set through the Sheets API.
     """
     sheets = list_sheets(service, spreadsheet_id)
     existing = {title: sid for title, sid in sheets}
-    has_dropdown = True  # duplicated/existing tabs already have colored chips
+    source = chip_source(sheets, PROJECT_TAB_NAME.get(project, project), sheet_title)
 
     if sheet_title in existing:
         print(f"  Sheet '{sheet_title}' already exists — overwriting data.")
         sheet_id = existing[sheet_title]
+    elif source:
+        print(f"  Creating '{sheet_title}' from '{source[0]}' (keeps dropdown colors).")
+        sheet_id = duplicate_sheet(
+            service, spreadsheet_id, source[1], sheet_title, len(sheets))
     else:
-        template = find_template_sheet(
-            sheets, PROJECT_TAB_NAME.get(project, project), sheet_title)
-        end_index = len(sheets)  # append new tabs at the end (chronological order)
-        if template:
-            print(f"  Creating '{sheet_title}' from '{template[0]}' "
-                  f"(keeps dropdown colors).")
-            sheet_id = duplicate_sheet(
-                service, spreadsheet_id, template[1], sheet_title, end_index)
-        else:
-            print(f"  Creating sheet '{sheet_title}' "
-                  f"(no prior tab found — dropdown will be uncolored).")
-            sheet_id = add_sheet(service, spreadsheet_id, sheet_title, end_index)
-            has_dropdown = False
+        print(f"  Creating sheet '{sheet_title}' "
+              f"(no '{CHIP_TEMPLATE_TAB}' tab — dropdown will be uncolored).")
+        sheet_id = add_sheet(service, spreadsheet_id, sheet_title, len(sheets))
 
     # Wipe any inherited/old data before writing fresh values (keeps formatting
     # and the colored dropdown validation, which live on the cells, not values).
@@ -443,112 +610,11 @@ def write_report_sheet(
     ))
 
     # ── Formatting ──────────────────────────────────────────────────────────
-    num_rows = len(all_values)
-    requests = [
-        # Left-align everything; let long task text overflow (no wrapping)
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 0,
-                    "endRowIndex": num_rows,
-                    "startColumnIndex": 0,
-                    "endColumnIndex": 5,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "horizontalAlignment": "LEFT",
-                        "wrapStrategy": "OVERFLOW_CELL",
-                    }
-                },
-                "fields": "userEnteredFormat(horizontalAlignment,wrapStrategy)",
-            }
-        },
-        # Time column as elapsed duration so values and the SUM display as H:MM:SS
-        {
-            "repeatCell": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 1,
-                    "endRowIndex": num_rows,
-                    "startColumnIndex": 4,
-                    "endColumnIndex": 5,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "numberFormat": {"type": "TIME", "pattern": "[h]:mm:ss"}
-                    }
-                },
-                "fields": "userEnteredFormat.numberFormat",
-            }
-        },
-        # Size the ID & Date columns; leave Task narrow so it overflows like the manual sheet
-        {
-            "autoResizeDimensions": {
-                "dimensions": {
-                    "sheetId": sheet_id,
-                    "dimension": "COLUMNS",
-                    "startIndex": 0,
-                    "endIndex": 2,
-                }
-            }
-        },
-    ]
-
-    # ── Category dropdown ─────────────────────────────────────────────────
-    category_range = {
-        "sheetId": sheet_id,
-        "startRowIndex": 1,
-        "endRowIndex": last_data_row,
-        "startColumnIndex": 3,
-        "endColumnIndex": 4,
-    }
-    if has_dropdown:
-        # The duplicated tab only carries colored chips on as many rows as the
-        # template had. If this period has more entries, the extra rows come out
-        # as plain text. Copy row 2's chip dropdown down across ALL data rows so
-        # every entry gets the colored validation, regardless of template length.
-        requests.append({
-            "copyPaste": {
-                "source": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": 1, "endRowIndex": 2,
-                    "startColumnIndex": 3, "endColumnIndex": 4,
-                },
-                "destination": category_range,
-                "pasteType": "PASTE_DATA_VALIDATION",
-            }
-        })
-        # Strip any leftover dropdown from the totals row and below.
-        requests.append({
-            "setDataValidation": {
-                "range": {
-                    "sheetId": sheet_id,
-                    "startRowIndex": last_data_row,
-                    "startColumnIndex": 3,
-                    "endColumnIndex": 4,
-                },
-            }
-        })
-    else:
-        # No template to copy from: create a plain (uncolored) dropdown.
-        requests.append({
-            "setDataValidation": {
-                "range": category_range,
-                "rule": {
-                    "condition": {
-                        "type": "ONE_OF_LIST",
-                        "values": [
-                            {"userEnteredValue": "Task"},
-                            {"userEnteredValue": "Onboarding"},
-                            {"userEnteredValue": "Meeting"},
-                        ],
-                    },
-                    "showCustomUi": True,
-                    "strict": False,
-                },
-            }
-        })
+    requests = format_requests(sheet_id, last_data_row)
+    if source and last_data_row >= 2:
+        # A duplicated tab only carries colored chips on as many rows as its
+        # source had, so paste the source's dropdown down across ALL data rows.
+        requests.append(chip_paste_request(sheet_id, last_data_row, source[1]))
 
     execute_with_retry(service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id, body={"requests": requests}

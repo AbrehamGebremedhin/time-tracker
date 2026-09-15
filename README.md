@@ -19,10 +19,12 @@ each have their **own spreadsheet** (`HOTSPOTAPP_SPREADSHEET_ID` /
    description prefix (`Meeting:` → Meeting, `Onboarding:` → Onboarding, else
    Task), or a matching tag if you use tags instead.
 3. For each project, creates a new tab in that project's spreadsheet by
-   **duplicating the most recent existing tab for that project**, then writes
-   the fresh data into it. Duplicating is deliberate: the Sheets API can't set
-   dropdown *chip colors*, so copying a prior tab is the only way to keep the
-   green/blue/gray `Category` chips.
+   **duplicating a tab that already has the colored dropdown** — the hidden
+   `_chip template` tab if present, else the most recent tab for that project —
+   then writes the fresh data into it and applies the column widths. Duplicating
+   is deliberate: dropdown *chip colors* appear nowhere in the Sheets API, so a
+   server-side copy is the only way to carry the green/blue/gray `Category`
+   chips onto a new tab.
 
 ## Setup
 
@@ -138,11 +140,19 @@ Edit these in [clockify_report.py](clockify_report.py):
 
 ## Notes
 
-- Category dropdown colors are inherited from the previous tab. The first ever tab
-  for a project has no source to copy from, so its dropdown is uncolored — color it
-  once by hand and future tabs will inherit it.
-- If a period has more entries than the source tab's dropdown range, the extra rows
-  won't have a `Category` dropdown.
+- Category chip colors come from the hidden `_chip template` tab in each
+  spreadsheet, seeded by `reformat_sheets.py` from the original hand-colored
+  spreadsheet. Without that tab the dropdown still works, just uncolored.
+- Column widths (`COLUMN_WIDTHS` in `clockify_report.py`) are set explicitly on
+  every run, so Task gets the room its long text needs.
+- To restyle every existing tab — widths and colored dropdowns — run
+  `python reformat_sheets.py` (`--dry-run` to preview). It only touches
+  formatting, never values.
+- All dates resolve in `LOCAL_TZ` (`Africa/Addis_Ababa`, GMT+3) via `today()`, not
+  the machine clock — the bot's server may be on UTC. Change `LOCAL_TZ` if you move.
+- Clockify reads the `start`/`end` filter in the *workspace's* timezone and ignores
+  the `Z`, so `to_clockify_bound()` sends local wall-clock time unconverted.
+  Converting to real UTC first shifts every window 3 hours early.
 - `.env`, `token.json`, `rates.json`, and the OAuth client secret are gitignored —
   keep them out of version control.
 

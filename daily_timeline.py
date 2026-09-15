@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 # Reuse the Clockify plumbing already written for the sheet report.
 from clockify_report import (
     get_user_id, get_time_entries, parse_duration, format_task, WORKSPACE_ID,
+    today,
 )
 
 ADDIS = ZoneInfo("Africa/Addis_Ababa")
@@ -61,22 +62,22 @@ def build_timeline(entries: list[dict]) -> list[str]:
 
 
 def main() -> None:
-    today = datetime.datetime.now(ADDIS).date()
+    now = today()
     if len(sys.argv) == 2:
         arg = sys.argv[1]
         if arg == "today":
-            day = today
+            day = now
         elif arg == "yesterday":
-            day = today - datetime.timedelta(days=1)
+            day = now - datetime.timedelta(days=1)
         else:
             day = datetime.date.fromisoformat(arg)
     else:
-        day = today
+        day = now
 
     entries = get_time_entries(WORKSPACE_ID, get_user_id(), day, day)
     lines = build_timeline(entries)
 
-    label = "Today's" if day == today else f"{day:%b %d, %Y}"
+    label = "Today's" if day == now else f"{day:%b %d, %Y}"
     print(f"\n{label} task timeline:\n")
     print("\n".join(lines) if lines else "(no entries)")
 

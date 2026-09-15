@@ -106,20 +106,29 @@ allowlist of chat ids.
 
 ## Key design decision: duplicate-a-tab instead of create-a-tab
 
-The Sheets API cannot set dropdown **chip colors**. To keep the green/blue/gray
-`Category` chips the manual sheets have, `write_report_sheet()`:
+Dropdown **chip colors** exist nowhere in the Sheets API — not in
+`DataValidationRule`, not as conditional formats, not as cell backgrounds
+(verified against a hand-colored tab: `conditionalFormats` is null and the cell
+background is plain white). A server-side copy is the only operation that
+carries them. So `write_report_sheet()`:
 
-1. Finds the most recent existing tab for the project
+1. Picks a color source (`chip_source`): the hidden `_chip template` tab if the
+   spreadsheet has one, else the most recent tab for the project
    (`find_template_sheet`, sorting tab titles by parsed year/month/day).
 2. **Duplicates** it — formatting and colored data-validation chips carry over.
 3. Clears `A2:Z1000` (values only; validation and formatting live on the cells).
 4. Writes header + rows + a `=SUM(...)` totals row with `USER_ENTERED` so
    `0:57:00` strings parse as durations.
-5. Copy-pastes row 2's data validation down all data rows (the template may
-   have had fewer rows), and strips validation below the totals row.
+5. Applies `format_requests()` — per-column pixel widths (`COLUMN_WIDTHS`, read
+   off the original hand-made tabs), left alignment, the `[h]:mm:ss` format on
+   the Time column, and the `ONE_OF_LIST` dropdown on the data rows only.
+6. Copy-pastes the source's D2 validation down all data rows (`chip_paste_request`),
+   since the source may have had fewer rows than this period.
 
-First-ever tab for a project has no template: it gets a plain, uncolored
-`ONE_OF_LIST` dropdown, to be colored once by hand.
+With no color source at all the tab still gets its widths and a plain, uncolored
+dropdown. `reformat_sheets.py` seeds `_chip template` into each spreadsheet by
+copying a hand-colored tab out of the original combined spreadsheet, and applies
+steps 5–6 to every tab that already exists.
 
 Re-running the same period finds the existing tab by title and overwrites its
 data in place (idempotent).

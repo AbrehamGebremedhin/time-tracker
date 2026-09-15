@@ -41,7 +41,7 @@ from googleapiclient.discovery import build
 
 from clockify_report import (
     get_credentials, get_sheets_service, run_period, period_label, current_period,
-    SERVICE_ACCOUNT_JSON,
+    SERVICE_ACCOUNT_JSON, today,
 )
 
 GOOGLE_ACCOUNT_EMAIL = os.environ.get(
@@ -80,16 +80,16 @@ def semimonthly_periods_through_today(
 ) -> list[tuple[datetime.date, datetime.date]]:
     """All (start, end) semi-monthly periods from start_year/start_month
     through today's current period, inclusive."""
-    today = datetime.date.today()
+    today_ = today()
     periods = []
     year, month = start_year, start_month
     while True:
         periods.append((datetime.date(year, month, 1), datetime.date(year, month, 15)))
-        if year == today.year and month == today.month and today.day <= 15:
+        if year == today_.year and month == today_.month and today_.day <= 15:
             break
         last_day = calendar.monthrange(year, month)[1]
         periods.append((datetime.date(year, month, 16), datetime.date(year, month, last_day)))
-        if year == today.year and month == today.month:
+        if year == today_.year and month == today_.month:
             break
         month += 1
         if month > 12:

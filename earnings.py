@@ -20,6 +20,7 @@ import sys
 
 from clockify_report import (
     get_user_id, get_time_entries, parse_duration, resolve_project, WORKSPACE_ID,
+    today,
 )
 from rates import load_rates, rate_for_date
 from zoneinfo import ZoneInfo
@@ -138,7 +139,7 @@ def compute_earnings(start: datetime.date, end: datetime.date) -> dict:
     floor before it's even begun.
     """
     history = load_rates()
-    weeks = sundays_in_range(start, min(end, datetime.date.today()))
+    weeks = sundays_in_range(start, min(end, today()))
     if weeks:
         fetch_start, fetch_end = weeks[0], weeks[-1] + datetime.timedelta(days=6)
     else:
@@ -163,7 +164,7 @@ def format_report(label: str, earnings: dict) -> str:
 
 
 def previous_month_range() -> tuple[datetime.date, datetime.date]:
-    first_of_this_month = datetime.date.today().replace(day=1)
+    first_of_this_month = today().replace(day=1)
     last_of_prev_month = first_of_this_month - datetime.timedelta(days=1)
     return month_range(last_of_prev_month.year, last_of_prev_month.month)
 
@@ -177,7 +178,7 @@ def main() -> None:
             print("No rates on file yet — set one with /setrate first.")
             return
         start = history[0][0]
-        end = datetime.date.today()
+        end = today()
         label = f"{start:%b %d, %Y} – {end:%b %d, %Y} (all-time)"
     elif arg == "last":
         start, end = previous_month_range()
@@ -187,7 +188,7 @@ def main() -> None:
         start, end = month_range(year, month)
         label = f"{start:%B %Y}"
     else:
-        today = datetime.date.today()
+        today = today()
         start, end = month_range(today.year, today.month)
         label = f"{start:%B %Y}"
 
